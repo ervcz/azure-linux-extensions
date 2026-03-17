@@ -1,0 +1,33 @@
+# AMA runtime directories and environment file.
+# Config template copies are handled by DALEC's 10-azuremonitoragent.conf.
+
+# Parent directories
+d /etc/opt 0755 root root -
+d /etc/opt/microsoft 0755 root root -
+d /var/opt 0755 root root -
+d /var/opt/microsoft 0755 root root -
+
+# Config directories
+d /etc/opt/microsoft/azuremonitoragent 0750 syslog syslog -
+d /etc/opt/microsoft/azuremonitoragent/config-cache 0750 syslog syslog -
+d /etc/opt/microsoft/azuremonitoragent/amacoreagent 0750 syslog syslog -
+d /etc/opt/microsoft/azuremonitoragent/oms 0750 syslog syslog -
+d /etc/opt/microsoft/azuremonitoragent/syslog 0750 syslog syslog -
+d /etc/opt/microsoft/azuremonitoragent/syslog/rsyslogconf 0750 syslog syslog -
+d /etc/opt/microsoft/azuremonitoragent/syslog/syslog-ngconf 0750 syslog syslog -
+d /etc/opt/microsoft/azuremonitoragent/tenants 0750 syslog syslog -
+
+# Data directories
+d /var/opt/microsoft/azuremonitoragent 0750 syslog syslog -
+d /var/opt/microsoft/azuremonitoragent/log 0750 syslog syslog -
+d /var/opt/microsoft/azuremonitoragent/events 0750 syslog syslog -
+
+# Runtime directories
+d /run/azuremonitoragent 0755 syslog syslog -
+d /run/azuremetricsext 0750 syslog syslog -
+
+# Environment file (empty, populated by enable())
+f /etc/default/azuremonitoragent 0644 root root -
+
+# Logrotate directory (may not exist on minimal systems)
+d /etc/logrotate.d 0755 root root -

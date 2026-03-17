@@ -1,0 +1,110 @@
+# syntax=ghcr.io/project-dalec/dalec/frontend:latest
+#
+# DALEC spec for AMA sysext image.
+#
+# Packages come via trixie-pkg build context (prebuilt .debs).
+# dependencies.sysext is empty on purpose -- see README.md.
+#
+# What DALEC does automatically:
+#   - keeps /opt/ as-is (binaries, libs, service files in share/)
+#   - excludes /etc/systemd/ (copies in opt/.../share/ survive)
+#   - moves /etc/ to /usr/share/ with C+ tmpfiles
+#   - moves /lib/ under /usr/
+#   - generates extension-release metadata
+#
+# Tests below run against the build container, not the EROFS image.
+# Sysext-specific checks (extension-release, /etc relocation) are
+# done by build.sh after the image is built.
+
+args:
+    VERSION: "0.0.0"
+    REVISION: "1"
+
+name: azuremonitoragent
+description: "Azure Monitor Agent system extension for Flatcar Linux"
+license: MIT
+version: ${VERSION}
+revision: ${REVISION}
+packager: Microsoft Corporation
+vendor: Microsoft Corporation
+website: https://learn.microsoft.com/en-us/azure/azure-monitor/agents/azure-monitor-agent-overview
+
+dependencies:
+    # Packages come via trixie-pkg context, not from external repos.
+    # Do NOT add them to dependencies.sysext -- DALEC would try to
+    # download them from Debian repos where they don't exist.
+    extra_repos:
+        - config:
+              local-ama-repo:
+                  inline:
+                      file:
+                          contents: |
+                              deb [trusted=yes] file:///opt/ama-repo ./
+                          permissions: 0o644
+          data:
+              - dest: /opt/ama-repo
+                spec:
+                    context:
+                        name: repo
+          envs:
+              - build
+              - install
+
+tests:
+    - name: sysusers.d present
+      files:
+          /usr/lib/sysusers.d/azuremonitoragent.conf:
+              contains:
+                  - "syslog"
+
+    - name: tmpfiles.d present
+      files:
+          /usr/lib/tmpfiles.d/azuremonitoragent.conf:
+              contains:
+                  - "/var/opt/microsoft/azuremonitoragent"
+                  - "/run/azuremonitoragent"
+
+    - name: core binaries present
+      files:
+          /opt/microsoft/azuremonitoragent/bin/mdsd:
+              permissions: 0o755
+          /opt/microsoft/azuremonitoragent/bin/mdsdmgr:
+              permissions: 0o755
+          /opt/microsoft/azuremonitoragent/init/azuremonitoragent:
+              permissions: 0o755
+
+    - name: extension binaries present
+      files:
+          /opt/microsoft/azuremonitoragent/bin/amacoreagent:
+              permissions: 0o755
+          /opt/microsoft/azuremonitoragent/bin/agentlauncher:
+              permissions: 0o755
+          /opt/microsoft/azuremonitoragent/bin/MetricsExtension:
+              permissions: 0o755
+
+    # install_via_sysext() copies these to /etc/systemd/system/ at runtime
+    - name: service files in opt share
+      files:
+          /opt/microsoft/azuremonitoragent/share/azuremonitoragent.service: {}
+          /opt/microsoft/azuremonitoragent/share/azuremonitoragentmgr.service:
+              {}
+
+    - name: shared library symlinks are symlinks not regular files
+      steps:
+          - command: >-
+                sh -c 'fail=0;
+                for f in
+                /opt/microsoft/azuremonitoragent/lib/libtcmalloc_minimal.so.4
+                /opt/microsoft/azuremonitoragent/lib/libsymcrypt.so.103
+                /opt/microsoft/azuremonitoragent/lib/libsymcrypt.so;
+                do if [ -e "$f" ] && [ ! -L "$f" ];
+                then fail=1; fi; done;
+                if [ "$fail" = 1 ]; then exit 1; fi;
+                echo OK'
+
+    # No Upholds= drop-ins should exist (AMA services live in
+    # opt/.../share/, not usr/lib/systemd/system/)
+    - name: no Upholds drop-ins
+      files:
+          /usr/lib/systemd/system/multi-user.target.d:
+              not_exist: true

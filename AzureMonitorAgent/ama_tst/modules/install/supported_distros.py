@@ -10,7 +10,8 @@ supported_dists_x86_64 = {'redhat' : ['7', '8', '9', '10'], # Rhel
                        'rocky' : ['8', '9'], # Rocky
                        'alma' : ['8', '9'], # Alma
                        'opensuse' : ['15'], # openSUSE
-                       'amzn' : ['2', '2023'] # Amazon Linux 2
+                       'amzn' : ['2', '2023'], # Amazon Linux 2
+                       'flatcar' : ['*'] # Flatcar Container Linux -- wildcard: any version (sysext)
 }
 
 supported_dists_aarch64 = {'redhat' : ['8', '9', '10'], # Rhel
@@ -22,5 +23,6 @@ supported_dists_aarch64 = {'redhat' : ['8', '9', '10'], # Rhel
                     'sles' : ['15', '16'], # SLES
                     'debian' : ['11', '12', '13'], # Debian
                     'rocky linux' : ['8', '9'], # Rocky
-                    'rocky' : ['8', '9'] # Rocky
+                    'rocky' : ['8', '9'], # Rocky
+                    'flatcar' : ['*'] # Flatcar Container Linux -- wildcard: any version (sysext)
 }

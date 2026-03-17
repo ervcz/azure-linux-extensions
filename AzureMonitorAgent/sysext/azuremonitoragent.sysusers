@@ -1,0 +1,3 @@
+# AMA syslog user/group (idempotent if already present)
+g syslog -
+u syslog - "Syslog daemon" - /usr/sbin/nologin

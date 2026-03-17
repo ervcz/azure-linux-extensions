@@ -706,7 +706,8 @@ def start_telegraf(is_lad):
 
 def get_telegraf_service_path(is_lad):
     """
-    Utility method to get the service path in case /lib/systemd/system doesnt exist on the OS
+    Get the service path for telegraf. For AMA, check /etc/systemd/system
+    first -- needed for Flatcar where /lib is a read-only sysext overlay.
     """
     if is_lad:
         if os.path.exists("/lib/systemd/system/"):
@@ -716,12 +717,15 @@ def get_telegraf_service_path(is_lad):
         else:
             raise Exception("Systemd unit files do not exist at /lib/systemd/system or /usr/lib/systemd/system/. Failed to setup telegraf service.")
     else:
+        # /etc/systemd/system is writable on all distros including Flatcar
+        if os.path.exists("/etc/systemd/system"):
+            return metrics_constants.telegraf_service_path_etc
         if os.path.exists("/lib/systemd/system/"):
             return metrics_constants.telegraf_service_path
         elif os.path.exists("/usr/lib/systemd/system/"):
             return metrics_constants.telegraf_service_path_usr_lib
         else:
-            raise Exception("Systemd unit files do not exist at /lib/systemd/system or /usr/lib/systemd/system/. Failed to setup telegraf service.")
+            raise Exception("Systemd unit files do not exist at /etc/systemd/system, /lib/systemd/system or /usr/lib/systemd/system/. Failed to setup telegraf service.")
 
 def get_telegraf_service_name(is_lad):
     """

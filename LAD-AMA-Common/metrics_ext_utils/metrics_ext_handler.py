@@ -833,6 +833,24 @@ def get_metrics_extension_service_name(is_lad):
         return metrics_constants.metrics_extension_service_name
 
 
+def _is_sysext_distro():
+    """Check if running on a sysext distro (Flatcar, osguard)."""
+    try:
+        with open('/etc/os-release', 'r') as f:
+            for line in f:
+                line = line.strip()
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    value = value.strip('"\'')
+                    if key == 'ID' and 'flatcar' in value.lower():
+                        return True
+                    if key == 'VARIANT_ID' and 'osguard' in value.lower():
+                        return True
+        return False
+    except:
+        return False
+
+
 def setup_me(is_lad, managed_identity="sai", HUtilObj=None, is_local_control_channel=True, user=None, group=None):
     """
     The main method for creating and writing MetricsExtension configuration as well as service setup
@@ -920,30 +938,53 @@ def setup_me(is_lad, managed_identity="sai", HUtilObj=None, is_local_control_cha
     else:
         metrics_ext_bin = metrics_constants.ama_metrics_extension_bin
 
-    if is_lad:
+    # Sysext: binary is in the read-only overlay, skip copy
+    if _is_sysext_distro():
+        if os.path.isfile(metrics_ext_bin):
+            if HUtilObj is not None:
+                HUtilObj.log("MetricsExtension found in sysext at {0}, skipping copy".format(metrics_ext_bin))
+        else:
+            raise Exception("MetricsExtension not found at {0} -- sysext image may be incomplete".format(metrics_ext_bin))
+    elif is_lad:
         lad_bin_path = "/usr/local/lad/bin/"
         # Checking if directory exists before copying ME bin over to /usr/local/lad/bin/
         if not os.path.exists(lad_bin_path):
             os.makedirs(lad_bin_path)
 
-    # Check if previous file exist at the location, compare the two binaries,
-    # If the files are not same, remove the older file, and copy the new one
-    # If they are the same, then we ignore it and don't copy
-    if os.path.isfile(me_bin_local_path):
-        if os.path.isfile(metrics_ext_bin):
-            if not filecmp.cmp(me_bin_local_path, metrics_ext_bin):
-                # Removing the file in case it is already being run in a process,
-                # in which case we can get an error "text file busy" while copying
-                os.remove(metrics_ext_bin)
+        # Check if previous file exist at the location, compare the two binaries,
+        # If the files are not same, remove the older file, and copy the new one
+        # If they are the same, then we ignore it and don't copy
+        if os.path.isfile(me_bin_local_path):
+            if os.path.isfile(metrics_ext_bin):
+                if not filecmp.cmp(me_bin_local_path, metrics_ext_bin):
+                    os.remove(metrics_ext_bin)
+                    copyfile(me_bin_local_path, metrics_ext_bin)
+                    os.chmod(metrics_ext_bin, stat.S_IXGRP | stat.S_IRGRP | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IXOTH | stat.S_IROTH)
+            else:
                 copyfile(me_bin_local_path, metrics_ext_bin)
                 os.chmod(metrics_ext_bin, stat.S_IXGRP | stat.S_IRGRP | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IXOTH | stat.S_IROTH)
-
         else:
-            # No previous binary exist, simply copy it and make it executable
-            copyfile(me_bin_local_path, metrics_ext_bin)
-            os.chmod(metrics_ext_bin, stat.S_IXGRP | stat.S_IRGRP | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IXOTH | stat.S_IROTH)
+            raise Exception("Unable to copy MetricsExtension Binary, could not find file at the location {0} . Failed to set up ME.".format(me_bin_local_path))
     else:
-        raise Exception("Unable to copy MetricsExtension Binary, could not find file at the location {0} . Failed to set up ME.".format(me_bin_local_path))
+        # Standard AMA path (dpkg/rpm)
+        # Check if previous file exist at the location, compare the two binaries,
+        # If the files are not same, remove the older file, and copy the new one
+        # If they are the same, then we ignore it and don't copy
+        if os.path.isfile(me_bin_local_path):
+            if os.path.isfile(metrics_ext_bin):
+                if not filecmp.cmp(me_bin_local_path, metrics_ext_bin):
+                    # Removing the file in case it is already being run in a process,
+                    # in which case we can get an error "text file busy" while copying
+                    os.remove(metrics_ext_bin)
+                    copyfile(me_bin_local_path, metrics_ext_bin)
+                    os.chmod(metrics_ext_bin, stat.S_IXGRP | stat.S_IRGRP | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IXOTH | stat.S_IROTH)
+
+            else:
+                # No previous binary exist, simply copy it and make it executable
+                copyfile(me_bin_local_path, metrics_ext_bin)
+                os.chmod(metrics_ext_bin, stat.S_IXGRP | stat.S_IRGRP | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IXOTH | stat.S_IROTH)
+        else:
+            raise Exception("Unable to copy MetricsExtension Binary, could not find file at the location {0} . Failed to set up ME.".format(me_bin_local_path))
 
     if is_lad:
         me_influx_port = metrics_constants.lad_metrics_extension_udp_port

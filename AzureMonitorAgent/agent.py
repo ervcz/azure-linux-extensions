@@ -44,6 +44,8 @@ from collections import OrderedDict
 from hashlib import sha256
 from shutil import copyfile, rmtree, copytree, copy2
 
+import sysext_handler
+
 from threading import Thread
 import telegraf_utils.telegraf_config_handler as telhandler
 import metrics_ext_utils.metrics_constants as metrics_constants
@@ -156,6 +158,17 @@ SettingsSequenceNumber = None
 HandlerEnvironment = None
 SettingsDict = None
 
+def _init_sysext_handler():
+    """Pass logging and command callbacks to sysext_handler. Called once from main()."""
+    sysext_handler.init(
+        log_info=hutil_log_info,
+        log_error=hutil_log_error,
+        run_command=run_command_and_log,
+        remove_localsyslog_configs=remove_localsyslog_configs,
+        get_uninstall_context=_get_uninstall_context,
+        cleanup_uninstall_context=_cleanup_uninstall_context,
+    )
+
 
 def main():
     """
@@ -163,6 +176,7 @@ def main():
     Parse out operation from argument, invoke the operation, and finish.
     """
     init_waagent_logger()
+    _init_sysext_handler()
     waagent_log_info('Azure Monitoring Agent for Linux started to handle.')
 
     # Determine the operation being executed
@@ -240,7 +254,9 @@ def check_disk_space_availability():
     Check if there is the required space on the machine.
     """
     try:
-        if get_free_space_mb("/var") < 700 or get_free_space_mb("/etc") < 500 or get_free_space_mb("/opt") < 500 :
+        # On sysext distros /opt is a small overlay tmpfs, not the real disk
+        opt_threshold = 0 if sysext_handler.is_sysext_distro() else 500
+        if get_free_space_mb("/var") < 700 or get_free_space_mb("/etc") < 500 or get_free_space_mb("/opt") < opt_threshold :
             # 52 is the exit code for missing dependency i.e. disk space
             # https://github.com/Azure/azure-marketplace/wiki/Extension-Build-Notes-Best-Practices#error-codes-and-messages-output-to-stderr
             return MissingDependency
@@ -312,6 +328,11 @@ def set_metrics_binaries():
             os.remove(os.path.join(MetricsExtensionDir, f))
 
 def copy_amacoreagent_binaries():
+    # Sysext: binaries are in the read-only overlay
+    if sysext_handler.is_sysext_distro():
+        hutil_log_info("Skipping amacoreagent binary copy (sysext)")
+        return
+
     current_arch = platform.machine()
     amacoreagent_bin_local_path = os.getcwd() + "/amaCoreAgentBin/amacoreagent_" + current_arch
     amacoreagent_bin = "/opt/microsoft/azuremonitoragent/bin/amacoreagent"
@@ -335,6 +356,11 @@ def copy_amacoreagent_binaries():
     compare_and_copy_bin(agentlauncher_bin_local_path, agentlauncher_bin)
 
 def copy_mdsd_fluentbit_binaries():
+    # Sysext: static binaries are in the image, skip SSL override
+    if sysext_handler.is_sysext_distro():
+        hutil_log_info("Skipping mdsd/fluent-bit binary copy (sysext)")
+        return
+
     current_arch = platform.machine()
     mdsd_bin_local_path = os.getcwd() + "/mdsdBin/mdsd_" + current_arch
     mdsdmgr_bin_local_path = os.getcwd() + "/mdsdBin/mdsdmgr_" + current_arch
@@ -371,6 +397,12 @@ def get_installed_package_version():
     Returns if Azure Monitor Agent is installed and a list of installed version of the Azure Monitor Agent package.
     Returns: (is_installed, version_list)
     """
+    if PackageManager == "sysext":
+        is_installed, version = sysext_handler.get_installed_sysext_version()
+        if is_installed:
+            return True, ["azuremonitoragent-{0}".format(version)]
+        return False, []
+
     if PackageManager == "dpkg":
         # In the case of dpkg, we specify only Package and Version as architecture is written as amd64/arm64 instead of x86_64/aarch64.
         cmd = "dpkg-query -W -f='${Package}_${Version}\n' 'azuremonitoragent*' 2>/dev/null"
@@ -408,6 +440,26 @@ def install():
     find_package_manager("Install")
     set_os_arch('Install')
     vm_dist, vm_ver = find_vm_distro('Install')
+
+    # Sysext: return early (overlay is read-only, binary copy would fail)
+    if PackageManager == "sysext":
+        hutil_log_info("Installing Azure Monitor Agent via systemd-sysext")
+
+        # Check if already installed with same version
+        arch, version = sysext_handler.get_sysext_info()
+        is_installed, installed_version = sysext_handler.get_installed_sysext_version()
+
+        if is_installed and installed_version == version:
+            hutil_log_info("AMA sysext version {0} already installed".format(version))
+            return 0, "Azure Monitor Agent already installed"
+
+        exit_code, output = sysext_handler.install_via_sysext()
+        if exit_code != 0:
+            return exit_code, output
+
+        # Binaries are in the sysext image; no copies or SUSE overrides needed
+
+        return 0, "Azure Monitor Agent installed successfully via sysext"
 
     # Check if Debian 12 and 13 VMs have rsyslog package (required for AMA 1.31+)
     if (vm_dist.startswith('debian')) and ((vm_ver.startswith('12') or vm_ver.startswith('13')) or int(vm_ver.split('.')[0]) >= 12):
@@ -546,6 +598,10 @@ def uninstall():
 
     exit_if_vm_not_supported('Uninstall')
     find_package_manager("Uninstall")
+
+    # SYSEXT PATH — must be before the dpkg/rpm guard below!
+    if PackageManager == "sysext":
+        return sysext_handler.uninstall_via_sysext()
 
     # Before we uninstall, we need to ensure AMA is installed to begin with
     is_installed, installed_versions = get_installed_package_version()
@@ -1427,6 +1483,12 @@ def install_azureotelcollector():
     MetricsExtension is responsible for writing the configuration file.
     Only if configuration is present, otelcollector process will start to run, the watcher service is responsible to monitor the configuration file.
     """
+    # Use is_sysext_distro() instead of PackageManager because
+    # metrics_watcher runs before find_package_manager() is called.
+    if sysext_handler.is_sysext_distro():
+        hutil_log_info("azureotelcollector pre-installed via sysext image")
+        return True
+
     if is_systemd():
         find_package_manager("Install")
         azureotelcollector_install_command = get_otelcollector_installation_command()
@@ -1499,6 +1561,10 @@ def uninstall_azureotelcollector():
     This method will uninstall azureotelcollector services.
     No need to stop it separately as the package maintainer script handles it upon uninstalling.
     """
+    if sysext_handler.is_sysext_distro():
+        hutil_log_info("azureotelcollector cleanup handled by uninstall_via_sysext()")
+        return
+
     if is_feature_enabled("enableAzureOTelCollector"):
         # Only remove azureotelcollector if file exists
         if os.path.exists("/lib/systemd/system/azureotelcollector-watcher.path"):
@@ -2064,7 +2130,12 @@ def generate_localsyslog_configs(uses_gcs = False, uses_mcs = False):
     Install local syslog configuration files if not present and restart syslog
     """
     global MDSDSyslogPort
-    
+
+    # Flatcar has no rsyslog/syslog-ng — syslog goes through fluent-bit + journald
+    if sysext_handler.is_sysext_distro():
+        hutil_log_info("Skipping rsyslog/syslog-ng config (sysext)")
+        return
+
     # don't deploy any configuration if no control plane is configured
     if not uses_gcs and not uses_mcs:
         return
@@ -2329,6 +2400,14 @@ def find_package_manager(operation):
     global PackageManager, PackageManagerOptions, BundleFileName
     dist, _ = find_vm_distro(operation)
 
+    # Sysext-based distros (Flatcar, osguard) bypass dpkg/rpm
+    if sysext_handler.is_sysext_distro():
+        PackageManager = "sysext"
+        PackageManagerOptions = ""
+        BundleFileName = ""
+        hutil_log_info("Detected sysext-based OS ({0}), using systemd-sysext".format(dist))
+        return
+
     dpkg_set = set(["debian", "ubuntu"])
     rpm_set = set(["oracle", "ol", "redhat", "centos", "red hat", "suse", "sles", "opensuse", "cbl-mariner", "mariner", "azurelinux", "rhel", "rocky", "alma", "amzn"])
     for dpkg_dist in dpkg_set:
@@ -2563,6 +2642,11 @@ def is_vm_supported_for_extension(operation):
         # Check if this VM distribution version is supported
         vm_ver_split = vm_ver.split('.')
         for supported_ver in supported_dists[supported_dist]:
+            # Wildcard: any version of this distro is supported
+            if supported_ver == '*':
+                vm_supported = True
+                break
+
             supported_ver_split = supported_ver.split('.')
 
             # If vm_ver is at least as precise (at least as many digits) as
@@ -2636,7 +2720,7 @@ def get_ssl_cert_info(operation):
 
     distro, version = find_vm_distro(operation)
 
-    for name in ['ubuntu', 'debian']:
+    for name in ['ubuntu', 'debian', 'flatcar']:
         if distro.startswith(name):
             return 'SSL_CERT_DIR', '/etc/ssl/certs'
 
@@ -2654,6 +2738,11 @@ def get_ssl_cert_info(operation):
     log_and_exit(operation, GenericErrorCode, 'Unable to determine values for SSL_CERT_DIR or SSL_CERT_FILE')
 
 def copy_astextension_binaries():
+    # Sysext: binaries are in the read-only overlay
+    if sysext_handler.is_sysext_distro():
+        hutil_log_info("Skipping astextension binary copy (sysext)")
+        return
+
     astextension_bin_local_path = os.getcwd() + "/AstExtensionBin/"
     astextension_bin = "/opt/microsoft/azuremonitoragent/bin/astextension/"
     astextension_runtimesbin = "/opt/microsoft/azuremonitoragent/bin/astextension/runtimes/"
